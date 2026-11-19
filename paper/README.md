@@ -1,7 +1,9 @@
 # Paper Figure Scripts
 
-This directory contains the scripts to generate the figures and their
-local experiment helpers. They use algorithms from `frank_wolfe/`.
+This is a directory containing modified scripts (originally from
+`tonysf/frankwolfe` to generate the
+figures and their local experiment helpers. They use algorithms
+from `frank_wolfe/`.
 
 - `generate_main_figures.py` generates the main matrix-factorization and splitting
   figures.

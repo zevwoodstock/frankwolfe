@@ -73,6 +73,10 @@ class IndefiniteQuadraticSplitting(ObjectiveFunction):
     def linear_operator(self, x):
         x1, x2 = self._unpack(x)
         return x1 - x2
+    def linear_operator_norm_sq(self):
+        #Norm of product space linear operator T(x1,x2)=x1-x2 is
+        #bounded above by sqrt(2), so ||T||^2\leq 2.
+        return 2
 
     def linear_operator_adjoint(self, z):
         return self._pack(z, -z)
@@ -103,6 +107,24 @@ def create_product_l1_lmo(c1, c2, radius, n):
 
     return lmo
 
+
+def distance_to_l1_ball(x, radius=1.0):
+    """
+    Euclidean distance from x to {z : ||z||_1 <= radius}.
+    """
+    abs_x = np.abs(x)
+    if abs_x.sum() <= radius:
+        return 0.0
+    # Euclidean projection onto the l1 ball via soft thresholding
+    u = np.sort(abs_x)[::-1]
+    cssv = np.cumsum(u)
+    rho = np.nonzero(
+    u * np.arange(1, len(u) + 1) > cssv - radius
+    )[0][-1]
+    theta = (cssv[rho] - radius) / (rho + 1)
+    projection = np.sign(x) * np.maximum(abs_x - theta, 0.0)
+    return np.linalg.norm(x - projection)
+    
 
 # ─── Prox for g = iota_{0} ───────────────────────────────────────────────────
 
@@ -173,7 +195,11 @@ def generate_indefinite_quadratic(n, frac_neg=0.3, eigval_range=(0.5, 5.0), seed
 # ─── FRAMES loop ──────────────────────────────────────────────────────────────
 
 
-def run_frames_splitting(obj, lmo, n_steps, beta0=1.0):
+def run_frames_splitting_ol(obj, lmo, n_steps, beta0=1.0, p=0.5, q=0.25):
+    """
+    FraMES splitting - vanilla open-loop schedules for stepsize
+    and beta schedule
+    """
     n = obj.n
     x0 = np.zeros(2 * n)
     x = lmo(obj.gradient(x0))
@@ -182,10 +208,12 @@ def run_frames_splitting(obj, lmo, n_steps, beta0=1.0):
     smoothed_gaps = np.zeros(n_steps)
     ns_gaps = np.zeros(n_steps)
     feasibility = np.zeros(n_steps)
+    l1_ball_distance = np.zeros(n_steps)
+    lam_list = np.zeros(n_steps)
 
     for i in tqdm(range(n_steps), desc="FRAMES Splitting"):
-        beta = beta0 / (i + 1) ** 0.25
-        step_size = 1.0 / (i + 1) ** 0.5
+        beta = beta0 / (i + 1) ** q
+        step_size = 1.0 / (i + 1) ** p
 
         grad = obj.gradient(x)
         Tx = obj.linear_operator(x)
@@ -197,16 +225,25 @@ def run_frames_splitting(obj, lmo, n_steps, beta0=1.0):
         smoothed_gaps[i] = np.sum(combined_grad * (x - direction))
         func_vals[i] = obj.evaluate(x)
         feasibility[i] = np.linalg.norm(Tx) ** 2
+        lam_list[i] = 1/beta
 
         x_bar = obj._xbar(x)
         ns_gaps[i] = nonsmooth_gap(x_bar, obj.Q, obj.b)
+        l1_ball_distance[i] = distance_to_l1_ball(x_bar, radius=1.0)
 
         x = (1 - step_size) * x + step_size * direction
 
-    return x, func_vals, smoothed_gaps, ns_gaps, feasibility
+    return (
+            x,
+            func_vals,
+            smoothed_gaps,
+            ns_gaps,
+            feasibility,
+            l1_ball_distance,
+            lam_list,
+        )
 
-
-def run_frames_splitting_log(obj, lmo, n_steps, beta0=1.0):
+def run_frames_splitting_ada(obj, lmo, n_steps, ada_func, beta0=1.0, p=0.5):
     n = obj.n
     x0 = np.zeros(2 * n)
     x = lmo(obj.gradient(x0))
@@ -215,11 +252,15 @@ def run_frames_splitting_log(obj, lmo, n_steps, beta0=1.0):
     smoothed_gaps = np.zeros(n_steps)
     ns_gaps = np.zeros(n_steps)
     feasibility = np.zeros(n_steps)
+    l1_ball_distance = np.zeros(n_steps)
+    lam_list = np.zeros(n_steps)
+
+
+    Tx = obj.linear_operator(x)
+    feasibility[0] = np.linalg.norm(Tx) ** 2
+    beta = beta0
 
     for i in tqdm(range(n_steps), desc="FRAMES Splitting"):
-        beta = beta0 / np.log(i + 2)
-        step_size = 1.0 / (i + 1) ** 0.5
-
         grad = obj.gradient(x)
         Tx = obj.linear_operator(x)
         moreau_grad = obj.linear_operator_adjoint(Tx - zero_prox(Tx, beta)) / beta
@@ -227,17 +268,47 @@ def run_frames_splitting_log(obj, lmo, n_steps, beta0=1.0):
 
         direction = lmo(combined_grad)
 
-        smoothed_gaps[i] = np.sum(combined_grad * (x - direction))
+        xd = x - direction
+        smoothed_gaps[i] = np.sum(combined_grad * (xd))
         func_vals[i] = obj.evaluate(x)
         feasibility[i] = np.linalg.norm(Tx) ** 2
+        lam_list[i] = 1/beta
+
 
         x_bar = obj._xbar(x)
         ns_gaps[i] = nonsmooth_gap(x_bar, obj.Q, obj.b)
+        l1_ball_distance[i] = distance_to_l1_ball(x_bar, radius=1.0)
+
+        if p=="short":
+            nxd = np.linalg.norm(x - direction)**2
+#            step_size = min(1, smoothed_gaps[i] / (
+#                (obj.lipschitz +
+#                    lam_list[i]*obj.linear_operator_norm_sq()) *
+#                nxd )
+#                )
+            step_size = min(1, smoothed_gaps[i] / ( (obj.lipschitz +
+                lam_list[i]*((np.linalg.norm(obj.linear_operator(xd))
+                    **2 )/nxd)) * (nxd) ))
+
+        elif p=="short-ada":
+            step_size = 1
+        else:
+            step_size = 1.0 / (i + 1) ** p
+
 
         x = (1 - step_size) * x + step_size * direction
 
-    return x, func_vals, smoothed_gaps, ns_gaps, feasibility
-
+        beta = ada_func(beta, beta0, i, step_size, feasibility[i],
+                smoothed_gaps[i])
+    return (
+            x,
+            func_vals,
+            smoothed_gaps,
+            ns_gaps,
+            feasibility,
+            l1_ball_distance,
+            lam_list,
+        )
 
 # ─── Experiment ───────────────────────────────────────────────────────────────
 
@@ -269,7 +340,7 @@ def run_experiment(n=50, n_steps=5000, frac_neg=0.3, seed=42):
     results = {}
 
     for beta0 in beta0_values:
-        x_final, fvals, sgaps, nsgaps, feas = run_frames_splitting(
+        x_final, fvals, sgaps, nsgaps, feas = run_frames_splitting_ol(
             obj, lmo, n_steps, beta0=beta0
         )
         x_bar_final = obj._xbar(x_final)
