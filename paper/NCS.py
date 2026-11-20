@@ -74,8 +74,8 @@ def figure3():
     )
 
     nn = 10
-    n_steps = 10000
-    normalize_metrics = True
+    n_steps = 30000
+    normalize_metrics = False
     seed = 42
     c1 = np.zeros(nn)
     c1[0] = 1.0
@@ -137,6 +137,7 @@ def figure3():
         xi = (it + 2) ** (-q_ada1)
         lam = 1/beta
         if feas <= sgap :
+#        if feas <= xi :
             #If approximately feasible, leave the smoothing parameter
             #unchanged
             return beta
@@ -158,6 +159,7 @@ def figure3():
         lam = 1/beta
         #zeta = 1
         if feas <= sgap :
+#        if feas <= xi :
             #If approximately feasible, leave the smoothing parameter
             #unchanged
             return beta
