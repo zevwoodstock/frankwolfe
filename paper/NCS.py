@@ -50,6 +50,18 @@ def estimate_lipschitz(obj, lmo, dim, n_samples=500, seed=99):
     return L_est
 
 
+def normalize_by_initial_value(values):
+    values = np.asarray(values, dtype=float)
+    initial_value = values[0]
+
+    if not np.isfinite(initial_value) or initial_value <= 0.0:
+        raise ValueError(
+            "Cannot normalize a metric whose initial value is "
+            f"{initial_value!r}."
+        )
+
+    return values / initial_value
+
 def figure3():
     from paper.experiments.l1_splitting_nonconvex import (
         IndefiniteQuadraticSplitting,
@@ -63,6 +75,7 @@ def figure3():
 
     nn = 10
     n_steps = 10000
+    normalize_metrics = True
     seed = 42
     c1 = np.zeros(nn)
     c1[0] = 1.0
@@ -94,6 +107,7 @@ def figure3():
             smoothed_gaps=sgaps,
             ns_gaps=nsgaps,
             feasibility=feas,
+            distD=np.sqrt(np.maximum(feas,0.0)),
             l1_ball_distance=l1_dist,
             lam=lam_ol
         )
@@ -172,6 +186,7 @@ def figure3():
             smoothed_gaps=sgaps_ada,
             ns_gaps=nsgaps_ada,
             feasibility=feas_ada,
+            distD=np.sqrt(np.maximum(feas_ada,0.0)),
             l1_ball_distance=l1_dist_ada,
             lam=lam_ada
         )
@@ -204,9 +219,22 @@ def figure3():
         ),
         (
             "Feasibility",
-            r"$\frac{1}{k}\sum\limits_{j=0}^{k-1}\mathrm{dist}_{\mathcal{D}}(T\mathbf{x}_j)$",
-            r"$\mathrm{dist}_{\mathcal{D}}(T\mathbf{x}_j)$",
-            lambda R: np.sqrt(np.maximum(R["feasibility"], 1e-16)),
+            (
+                r"$\max\left\{"
+                r"\mathrm{dist}_{\mathcal D}(T\mathbf{x}_k),"
+                r"\mathrm{gap}^{\beta_k}(\mathbf{x}_k)"
+                r"\right\}$"
+                if not normalize_metrics
+                else
+                r"$\max\left\{"
+                r"\frac{\mathrm{dist}_{\mathcal D}(T\mathbf{x}_k)}"
+                r"{\mathrm{dist}_{\mathcal D}(T\mathbf{x}_0)},"
+                r"\frac{\mathrm{gap}^{\beta_k}(\mathbf{x}_k)}"
+                r"{\mathrm{gap}^{\beta_0}(\mathbf{x}_0)}"
+                r"\right\}$"
+            ),
+            r"$\mathrm{dist}_{\mathcal D}(T\mathbf{x}_k)$",
+            lambda R: R["distD"],
         ),
         (
             r"Distance to the unit $\ell_1$-ball",
@@ -225,13 +253,23 @@ def figure3():
     for method_label, R, linestyle, color in method_specs:
         for row, (title, _, _, metric_fn) in enumerate(metric_specs):
             y = metric_fn(R)
-
+            method_iters = np.arange(1, len(y) + 1)
             if title == r"Distance to the unit $\ell_1$-ball":
                 left_y = np.asarray(R["lam"])
-            else:
-                method_iters = np.arange(1, len(y) + 1)
-                left_y = np.cumsum(y) / method_iters
             
+            elif title == "Feasibility":
+                distD = np.asarray(R["distD"])
+                smoothed_gaps = np.asarray(R["smoothed_gaps"])
+            
+                if normalize_metrics:
+                    distD = normalize_by_initial_value(distD)
+                    smoothed_gaps = normalize_by_initial_value(smoothed_gaps)
+            
+                left_y = np.maximum(distD, smoothed_gaps)
+            
+            else:
+                left_y = np.cumsum(y) / method_iters
+
             if title in (r"Distance to the unit $\ell_1$-ball", "Feasibility"):
                 right_y = y
             else:
@@ -264,6 +302,15 @@ def figure3():
         if title == r"Distance to the unit $\ell_1$-ball":
             axs[row, 0].set_title(
                 r"Smoothing parameter $\lambda_k$",
+                fontsize=titlefontsize,
+            )
+        elif title == "Feasibility":
+            axs[row, 0].set_title(
+                (
+                    "Relative joint stationarity/feasibility"
+                    if normalize_metrics
+                    else "Joint stationarity/feasibility"
+                ),
                 fontsize=titlefontsize,
             )
         else:
